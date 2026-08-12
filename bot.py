@@ -5,6 +5,7 @@ import requests
 import http.server
 import socketserver
 import threading
+import telegram
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
@@ -15,6 +16,8 @@ DEVELOPER_ID = 7958260008  # رقم حسابك
 
 USER_FILE = "users.json"
 logging.basicConfig(level=logging.INFO)
+
+print(f"📦 إصدار python-telegram-bot: {telegram.__version__}")
 
 # ========== إدارة المستخدمين ==========
 def load_users():
@@ -67,24 +70,20 @@ def username_search(username):
 
 # ========== دوال البوت ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """رسالة ترحيب مع أزرار"""
     uid = update.effective_user.id
     users.add(uid)
     save_users(users)
     context.user_data.clear()
 
-    # الأزرار الرئيسية
     keyboard = [
         [InlineKeyboardButton("🇾🇪 معلومات عن اليمن", callback_data="yemen_info")],
         [InlineKeyboardButton("📞 بحث برقم هاتف", callback_data="phone_lookup")],
         [InlineKeyboardButton("🔍 بحث باسم مستخدم", callback_data="username_search")],
         [InlineKeyboardButton("❓ المساعدة", callback_data="help")]
     ]
-    # زر لوحة المطور يظهر فقط للمطور
     if uid == DEVELOPER_ID:
         keyboard.append([InlineKeyboardButton("🔧 لوحة المطور", callback_data="admin_panel")])
 
-    # رسالة ترحيب
     welcome_message = (
         "👋 **أهلاً بك في بوت OSINT اليمن!**\n\n"
         "🇾🇪 هذا البوت يساعدك في جمع المعلومات من المصادر المفتوحة.\n\n"
@@ -103,7 +102,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def yemen_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معلومات عن اليمن"""
     query = update.callback_query
     await query.answer()
     info = (
@@ -140,9 +138,12 @@ async def username_search_start(update: Update, context: ContextTypes.DEFAULT_TY
     )
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """لوحة تحكم المطور"""
-    if update.effective_user.id != DEVELOPER_ID:
-        await update.message.reply_text("⛔ هذا الأمر للمطور فقط.")
+    user_id = update.effective_user.id
+    if user_id != DEVELOPER_ID:
+        if update.callback_query:
+            await update.callback_query.answer("⛔ هذا الزر للمطور فقط.", show_alert=True)
+        else:
+            await update.message.reply_text("⛔ هذا الأمر للمطور فقط.")
         return
 
     keyboard = [
@@ -153,14 +154,20 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("✉️ مراسلة فردية", callback_data="msg_user")],
         [InlineKeyboardButton("🔍 مراقبة الرسائل", callback_data="toggle_monitor")]
     ]
-    await update.message.reply_text(
-        "🛠️ **لوحة تحكم المطور**\n"
-        "اختر الإجراء المناسب:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            "🛠️ **لوحة تحكم المطور**\nاختر الإجراء المناسب:",
+            reply_markup=reply_markup
+        )
+    else:
+        await update.message.reply_text(
+            "🛠️ **لوحة تحكم المطور**\nاختر الإجراء المناسب:",
+            reply_markup=reply_markup
+        )
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالج الأزرار"""
     query = update.callback_query
     await query.answer()
     uid = update.effective_user.id
@@ -183,18 +190,33 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔹 **معلومات اليمن**: تعرض معلومات عامة عن البلد.\n\n"
             "📌 **ملاحظة**: جميع المعلومات مستخلصة من المصادر المفتوحة."
         )
+    elif data == "admin_panel":
+        await admin_panel(update, context)
     elif uid != DEVELOPER_ID:
         await query.edit_message_text("⛔ هذا الزر للمطور فقط.")
     else:
         context.user_data["admin_action"] = data
-        await query.edit_message_text(f"📝 اخترت `{data}`. أرسل التفاصيل المطلوبة.")
+        if data == "broadcast":
+            await query.edit_message_text("📢 أرسل الآن رسالة الإذاعة (نص فقط).")
+        elif data == "list_users":
+            await query.edit_message_text(f"👥 عدد المستخدمين المسجلين: {len(users)}")
+        elif data == "block_user":
+            await query.edit_message_text("🚫 أرسل معرف المستخدم (ID) لحظره.")
+        elif data == "unblock_user":
+            await query.edit_message_text("✅ أرسل معرف المستخدم (ID) لفك الحظر.")
+        elif data == "msg_user":
+            await query.edit_message_text("✉️ أرسل المعرف ثم الرسالة مفصولة بمسافة:\nمثال: `123456789 مرحبا`")
+        elif data == "toggle_monitor":
+            current = context.bot_data.get("monitor", False)
+            context.bot_data["monitor"] = not current
+            status = "مفعلة" if not current else "معطلة"
+            await query.edit_message_text(f"🔍 حالة مراقبة الرسائل: {status}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالج الرسائل النصية"""
     uid = update.effective_user.id
     text = update.message.text
 
-    # مراقبة المطور (إعادة توجيه الرسائل)
+    # مراقبة المطور
     if context.bot_data.get("monitor", False) and uid != DEVELOPER_ID:
         try:
             await context.bot.forward_message(
@@ -244,7 +266,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚫 أنت محظور من استخدام هذا البوت.")
         return
 
-    # معالجة أوامر OSINT
+    # أوامر OSINT
     mode = context.user_data.get("mode")
     if mode == "phone":
         result = phone_lookup(text)
@@ -269,7 +291,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("mode", None)
 
     else:
-        # إذا أرسل المستخدم رسالة عادية
         await update.message.reply_text(
             "👋 استخدم الأزرار لاختيار الخدمة.\n"
             "أو أرسل `/start` لإعادة ظهور الأزرار."
@@ -277,15 +298,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========== تشغيل البوت ==========
 def run_bot():
-    application = Application.builder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("admin", admin_panel))
-    application.add_handler(CallbackQueryHandler(callback_handler))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("✅ BOT STARTED SUCCESSFULLY (OSINT YEMEN V2 WITH BUTTONS)")
-    application.run_polling()
+    try:
+        application = Application.builder().token(BOT_TOKEN).build()
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("admin", admin_panel))
+        application.add_handler(CallbackQueryHandler(callback_handler))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        print("✅ البوت جاهز للتشغيل (OSINT YEMEN V2)")
+        application.run_polling()
+    except Exception as e:
+        print(f"❌ فشل تشغيل البوت: {e}")
+        import traceback
+        traceback.print_exc()
 
-# ========== خادم ويب بسيط (لإبقاء Render نشطاً) ==========
+# ========== خادم ويب بسيط ==========
 class HealthCheckHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -295,12 +321,12 @@ class HealthCheckHandler(http.server.SimpleHTTPRequestHandler):
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     with socketserver.TCPServer(("0.0.0.0", port), HealthCheckHandler) as httpd:
-        print(f"✅ WEB SERVER RUNNING ON PORT {port}")
+        print(f"✅ خادم الويب يعمل على المنفذ {port}")
         httpd.serve_forever()
 
+# ========== نقطة الدخول ==========
 if __name__ == "__main__":
-    print("🚀 STARTING OSINT BOT V2 (RENDER COMPATIBLE)...")
-    bot_thread = threading.Thread(target=run_bot)
-    bot_thread.daemon = True
-    bot_thread.start()
-    run_web_server()
+    print("🚀 بدء تشغيل البوت...")
+    web_thread = threading.Thread(target=run_web_server, daemon=True)
+    web_thread.start()
+    run_bot()
